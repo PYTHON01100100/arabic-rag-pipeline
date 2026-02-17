@@ -76,7 +76,7 @@ Stage 5: Citation Processing ──> [S1], [S2] mapped to file + page
 **1. Clone and create a virtual environment:**
 
 ```bash
-git clone https://github.com/<your-username>/lecture-saver-3000.git
+git clone https://github.com/zenmakhlouf/lecture-saver-3000.git
 cd lecture-saver-3000
 python3.13 -m venv .venv
 source .venv/bin/activate
