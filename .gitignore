@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# ChromaDB local database
+streamlit_chroma_db/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# User lecture files (not part of the project)
+*.pdf
+
+# Old docs
+ultimate_rag_guide.md
+
+# Claude Code
+.claude/
