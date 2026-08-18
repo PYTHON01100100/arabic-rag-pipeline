@@ -1,0 +1,60 @@
+---
+# Ingress for external access (requires Ingress Controller)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-pipeline-ingress
+  namespace: rag-pipeline
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "200m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  tls:
+  - hosts:
+    - rag-pipeline.example.com
+    secretName: rag-pipeline-tls
+  rules:
+  - host: rag-pipeline.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: rag-pipeline-service
+            port:
+              number: 80
+
+---
+# NetworkPolicy for security (optional but recommended)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rag-pipeline-network-policy
+  namespace: rag-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: rag-pipeline
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+  egress:
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+  - to:
+    - podSelector: {}

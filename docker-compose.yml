@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  # Main RAG Pipeline Application
+  rag-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arabic-rag-pipeline
+    ports:
+      - "8501:8501"
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-auto}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama2}
+      - OLLAMA_TEMPERATURE=${OLLAMA_TEMPERATURE:-0.7}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://vllm:8000/v1}
+      - VLLM_API_KEY=${VLLM_API_KEY:-not-needed}
+      - VLLM_MODEL=${VLLM_MODEL:-meta-llama/Llama-2-7b-chat-hf}
+      - VLLM_MAX_TOKENS=${VLLM_MAX_TOKENS:-2048}
+      - VLLM_TEMPERATURE=${VLLM_TEMPERATURE:-0.7}
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+    volumes:
+      # Persistent ChromaDB storage
+      - chroma_db_data:/app/streamlit_chroma_db
+      # Local development - mount source code for hot reload
+      - .:/app
+    restart: unless-stopped
+    depends_on:
+      # Optional: depends on selected LLM provider
+      - ollama
+      - vllm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - rag-network
+    labels:
+      com.example.description: "Arabic RAG Pipeline with Streamlit"
+
+  # ============================================================================
+  # Optional: Ollama - Local LLM (no GPU needed, slower but simple)
+  # ============================================================================
+  # To use Ollama:
+  # 1. Set LLM_PROVIDER=ollama in .env
+  # 2. Run: docker compose up ollama
+  # 3. Wait for "Ollama server ready" message
+  # 4. Run: docker compose exec ollama ollama run llama2
+  #
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-server
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    restart: unless-stopped
+    networks:
+      - rag-network
+    profiles:
+      - ollama  # Start with: docker compose --profile ollama up
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ============================================================================
+  # Optional: vLLM - Fast Local LLM Server (GPU recommended, OpenAI-compatible)
+  # ============================================================================
+  # To use vLLM:
+  # 1. Set LLM_PROVIDER=vllm in .env
+  # 2. Ensure GPU available (NVIDIA with CUDA)
+  # 3. Run: docker compose --profile vllm up
+  #
+  # Note: Requires 8GB+ GPU memory. Set MODEL_NAME to your choice.
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-server
+    ports:
+      - "8000:8000"
+    volumes:
+      - vllm_cache:/root/.cache
+    environment:
+      - MODEL_NAME=meta-llama/Llama-2-7b-chat-hf
+      - CUDA_VISIBLE_DEVICES=0
+      - VLLM_USE_V2_BLOCK_MANAGER=1
+      - VLLM_ATTENTION_BACKEND=flashinfer
+    restart: unless-stopped
+    networks:
+      - rag-network
+    profiles:
+      - vllm  # Start with: docker compose --profile vllm up
+    # Uncomment for GPU support (requires nvidia-docker)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # vLLM takes longer to start
+
+volumes:
+  chroma_db_data:
+    driver: local
+  ollama_data:
+    driver: local
+  vllm_cache:
+    driver: local
+
+networks:
+  rag-network:
+    driver: bridge

@@ -1,0 +1,257 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rag-pipeline
+---
+# ConfigMap for Streamlit config
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streamlit-config
+  namespace: rag-pipeline
+data:
+  config.toml: |
+    [server]
+    port = 8501
+    address = "0.0.0.0"
+    headless = true
+    runOnSave = true
+    maxUploadSize = 200
+
+    [client]
+    toolbarMode = "minimal"
+    showErrorDetails = true
+
+    [logger]
+    level = "info"
+
+    [theme]
+    primaryColor = "#FF6B6B"
+    backgroundColor = "#FFFFFF"
+    secondaryBackgroundColor = "#F0F2F6"
+    textColor = "#262730"
+    font = "sans serif"
+
+---
+# Secret for API Key
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rag-secrets
+  namespace: rag-pipeline
+type: Opaque
+stringData:
+  GEMINI_API_KEY: "your-gemini-api-key-here"
+
+---
+# PersistentVolumeClaim for ChromaDB
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: chroma-db-pvc
+  namespace: rag-pipeline
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# PersistentVolumeClaim for Data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data-pvc
+  namespace: rag-pipeline
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-pipeline-service
+  namespace: rag-pipeline
+  labels:
+    app: rag-pipeline
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 8501
+      protocol: TCP
+      name: http
+  selector:
+    app: rag-pipeline
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-pipeline
+  namespace: rag-pipeline
+  labels:
+    app: rag-pipeline
+    version: v1
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: rag-pipeline
+  template:
+    metadata:
+      labels:
+        app: rag-pipeline
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8501"
+    spec:
+      serviceAccountName: default
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: rag-pipeline
+        image: rag-pipeline:latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8501
+          protocol: TCP
+
+        env:
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: rag-secrets
+              key: GEMINI_API_KEY
+        - name: STREAMLIT_SERVER_PORT
+          value: "8501"
+        - name: STREAMLIT_SERVER_ADDRESS
+          value: "0.0.0.0"
+        - name: STREAMLIT_SERVER_HEADLESS
+          value: "true"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+
+        livenessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 40
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        volumeMounts:
+        - name: chroma-db
+          mountPath: /app/streamlit_chroma_db
+        - name: app-data
+          mountPath: /app/data
+        - name: streamlit-config
+          mountPath: /home/appuser/.streamlit
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL
+
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+      volumes:
+      - name: chroma-db
+        persistentVolumeClaim:
+          claimName: chroma-db-pvc
+      - name: app-data
+        persistentVolumeClaim:
+          claimName: app-data-pvc
+      - name: streamlit-config
+        configMap:
+          name: streamlit-config
+
+      # Pod disruption budget
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - rag-pipeline
+              topologyKey: kubernetes.io/hostname
+
+---
+# HorizontalPodAutoscaler (optional, adjust as needed)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rag-pipeline-hpa
+  namespace: rag-pipeline
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rag-pipeline
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

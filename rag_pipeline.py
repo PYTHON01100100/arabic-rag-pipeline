@@ -14,10 +14,11 @@ import streamlit as st
 import chromadb
 from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 from pypdf import PdfReader
 from sentence_transformers import CrossEncoder
+
+# LLM provider
+from llm_providers import LLMProviderFactory
 
 # OCR imports (graceful fallback if not installed)
 try:
@@ -57,15 +58,49 @@ SYSTEM_PROMPT = """أنت مساعد أكاديمي متخصص يساعد الط
 """
 
 # ---------------------------------------------------------------------------
-# API Key Validation
+# LLM Provider Initialization
 # ---------------------------------------------------------------------------
-api_key = os.environ.get("GEMINI_API_KEY")
-if not api_key:
-    st.error("مفتاح API غير موجود. أضف GEMINI_API_KEY إلى ملف .env")
-    st.info("أنشئ ملف .env في مجلد المشروع وأضف: GEMINI_API_KEY=your_key_here")
-    st.stop()
+# Auto-select LLM provider (priority: vLLM > Ollama > Gemini)
+LLM_PROVIDER_NAME = os.environ.get("LLM_PROVIDER", "auto")
+available_providers = LLMProviderFactory.get_available_providers()
 
-gemini_client = genai.Client(api_key=api_key)
+if LLM_PROVIDER_NAME == "auto":
+    # Find first available provider
+    if available_providers["vllm"]:
+        llm_provider = LLMProviderFactory.get_provider("vllm")
+        provider_name = "vLLM"
+    elif available_providers["ollama"]:
+        llm_provider = LLMProviderFactory.get_provider("ollama")
+        provider_name = "Ollama"
+    elif available_providers["gemini"]:
+        llm_provider = LLMProviderFactory.get_provider("gemini")
+        provider_name = "Google Gemini"
+    else:
+        st.error("❌ لم يتم العثور على أي مزود LLM متاح!")
+        st.info("""
+يرجى تكوين أحد الخيارات التالية:
+
+**خيار 1: Google Gemini (سهل للبدء)**
+- أضف GEMINI_API_KEY إلى .env من https://aistudio.google.com/apikey
+
+**خيار 2: Ollama (محلي، بدون تكاليف)**
+- ثبّت Ollama من https://ollama.ai
+- قم بتشغيل: ollama run llama2-arabic
+- اضبط OLLAMA_MODEL و OLLAMA_BASE_URL في .env
+
+**خيار 3: vLLM (محلي، أسرع)**
+- استخدم docker-compose.yml مع خدمة vLLM
+- اضبط VLLM_MODEL و VLLM_BASE_URL في .env
+        """)
+        st.stop()
+else:
+    llm_provider = LLMProviderFactory.get_provider(LLM_PROVIDER_NAME)
+    provider_name = LLM_PROVIDER_NAME
+    if not llm_provider.is_available():
+        st.error(f"❌ مزود {provider_name} غير متاح")
+        st.stop()
+
+st.sidebar.success(f"✅ مزود LLM: {provider_name}")
 
 # ---------------------------------------------------------------------------
 # RTL Styling for Arabic UI
@@ -269,56 +304,26 @@ def process_and_index_pdf(uploaded_file) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Chat History Formatting
-# ---------------------------------------------------------------------------
-def build_conversation_contents(
-    chat_history: list[dict],
-    context: str,
-    user_question: str,
-) -> list[types.Content]:
-    """Build the contents list for the Gemini API, including recent chat history.
-
-    Includes the last MAX_CHAT_HISTORY_TURNS turns of conversation so the LLM
-    can handle follow-up questions like "explain more" or "what do you mean?".
-    """
-    contents: list[types.Content] = []
-
-    # Include recent history (trim to last N turns)
-    recent_history = chat_history[-(MAX_CHAT_HISTORY_TURNS * 2) :]
-    for message in recent_history:
-        role = "user" if message["role"] == "user" else "model"
-        contents.append(
-            types.Content(role=role, parts=[types.Part.from_text(text=message["content"])])
-        )
-
-    # Final user message with RAG context
-    augmented_question = (
-        f"السياق المسترجع من المحاضرات:\n{context}\n\n"
-        f"سؤال الطالب: {user_question}"
-    )
-    contents.append(
-        types.Content(role="user", parts=[types.Part.from_text(text=augmented_question)])
-    )
-
-    return contents
-
-
-# ---------------------------------------------------------------------------
 # LLM Interaction
 # ---------------------------------------------------------------------------
 def generate_answer(context: str, user_question: str, chat_history: list[dict]) -> str:
-    """Send the context, chat history, and question to Gemini and return the answer."""
-    contents = build_conversation_contents(chat_history, context, user_question)
+    """Generate answer using the configured LLM provider.
+
+    Includes recent chat history so LLM can handle follow-up questions.
+    """
+    # Build context with chat history (last N turns)
+    recent_history = chat_history[-(MAX_CHAT_HISTORY_TURNS * 2) :]
+    history_text = ""
+    if recent_history:
+        history_text = "\n\nسجل المحادثة السابقة:\n"
+        for msg in recent_history:
+            role = "الطالب" if msg["role"] == "user" else "المساعد"
+            history_text += f"{role}: {msg['content']}\n"
+
+    full_system_prompt = SYSTEM_PROMPT + history_text
 
     try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-            ),
-        )
-        return response.text.strip()
+        return llm_provider.generate(full_system_prompt, context, user_question)
     except Exception as exc:
         return f"عذراً، حدث خطأ أثناء توليد الإجابة: {exc}"
 
